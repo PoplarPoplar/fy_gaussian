@@ -621,8 +621,7 @@ if __name__ == "__main__":
         print("Computing parameters.")
         training_image_num = get_train_image_num(args)
         factor = 20
-        args.iterations=30000
-        #args.iterations = 10_000 +  int(training_image_num*factor*args.train_strength)
+        args.iterations = 10_000 + int(training_image_num * factor * args.train_strength)
         args.position_lr_max_steps = args.iterations
         args.densification_interval = 300#math.ceil(training_image_num/2)
         args.densify_from_iter = 2*training_image_num
