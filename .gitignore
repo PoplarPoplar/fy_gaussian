@@ -76,6 +76,7 @@ cmake-build-*/
 
 # Packaging / local metadata
 *.egg-info/
+.third_party/
 
 # Optional local experiments / viewer docs
 ablation/

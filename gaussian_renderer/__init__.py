@@ -12,12 +12,46 @@
 
 import torch
 import math
+import os
+import sys
+import importlib.util
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
 
 RASTER_SETTING_FIELDS = getattr(GaussianRasterizationSettings, "_fields", tuple())
+HIERARCHY_RASTERIZER_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".third_party",
+    "hierarchy_rasterizer",
+)
+_hierarchy_rasterizer_module = None
+
+
+def _load_hierarchy_rasterizer():
+    global _hierarchy_rasterizer_module
+    if _hierarchy_rasterizer_module is not None:
+        return _hierarchy_rasterizer_module
+
+    package_dir = os.path.join(HIERARCHY_RASTERIZER_DIR, "diff_gaussian_rasterization")
+    init_path = os.path.join(package_dir, "__init__.py")
+    if not os.path.exists(init_path):
+        raise FileNotFoundError(
+            f"Hierarchy rasterizer package not found: {init_path}. "
+            "Please build/install submodules/hierarchy-rasterizer into .third_party/hierarchy_rasterizer first."
+        )
+
+    spec = importlib.util.spec_from_file_location(
+        "hierarchy_diff_gaussian_rasterization",
+        init_path,
+        submodule_search_locations=[package_dir],
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _hierarchy_rasterizer_module = module
+    return module
 
 
 def _build_raster_settings(
@@ -195,6 +229,107 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "normal":rendered_normal,
             "maxweight_indices": maxweight_indices
             }
+
+
+def render_post(
+    viewpoint_camera,
+    pc: GaussianModel,
+    pipe,
+    bg_color: torch.Tensor,
+    scaling_modifier=1.0,
+    render_indices=None,
+    parent_indices=None,
+    interpolation_weights=None,
+    num_node_kids=None,
+    use_trained_exp=False,
+    depth_threshold=None,
+):
+    """
+    为 train_post/render_hierarchy 提供独立层级渲染入口。
+    这里显式加载 .third_party/hierarchy_rasterizer 中构建出的层级 rasterizer，
+    避免覆盖 train_single 使用的普通 diff_gaussian_rasterization。
+    """
+
+    hierarchy_rasterizer = _load_hierarchy_rasterizer()
+    hierarchy_settings_cls = hierarchy_rasterizer.GaussianRasterizationSettings
+    hierarchy_rasterizer_cls = hierarchy_rasterizer.GaussianRasterizer
+
+    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+    try:
+        screenspace_points.retain_grad()
+    except:
+        pass
+
+    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+
+    if render_indices is None:
+        render_indices = torch.empty(0, dtype=torch.int32, device="cuda")
+    if parent_indices is None:
+        parent_indices = torch.empty(0, dtype=torch.int32, device="cuda")
+    if interpolation_weights is None:
+        interpolation_weights = torch.empty(0, dtype=torch.float32, device="cuda")
+    if num_node_kids is None:
+        num_node_kids = torch.empty(0, dtype=torch.int32, device="cuda")
+
+    raster_settings = hierarchy_settings_cls(
+        image_height=int(viewpoint_camera.image_height),
+        image_width=int(viewpoint_camera.image_width),
+        tanfovx=tanfovx,
+        tanfovy=tanfovy,
+        bg=bg_color,
+        scale_modifier=scaling_modifier,
+        depth_threshold=depth_threshold if depth_threshold is not None else -1.0,
+        viewmatrix=viewpoint_camera.world_view_transform,
+        projmatrix=viewpoint_camera.full_proj_transform,
+        sh_degree=pc.active_sh_degree,
+        campos=viewpoint_camera.camera_center,
+        prefiltered=False,
+        debug=pipe.debug,
+        render_indices=render_indices,
+        parent_indices=parent_indices,
+        interpolation_weights=interpolation_weights,
+        num_node_kids=num_node_kids,
+        do_depth=True,
+    )
+
+    rasterizer = hierarchy_rasterizer_cls(raster_settings=raster_settings)
+
+    means3D = pc.get_xyz
+    means2D = screenspace_points
+    opacity = pc.get_opacity
+    scales = pc.get_scaling
+    rotations = pc.get_rotation
+    cov3D_precomp = None
+
+    shs = pc.get_features
+    colors_precomp = None
+
+    rendered_image, radii, _pixels, _depth_image, _maxweight_indices = rasterizer(
+        means3D=means3D,
+        means2D=means2D,
+        shs=shs,
+        colors_precomp=colors_precomp,
+        opacities=opacity,
+        scales=scales,
+        rotations=rotations,
+        cov3D_precomp=cov3D_precomp,
+    )
+
+    if use_trained_exp and hasattr(pc, "_exposure") and hasattr(pc, "exposure_mapping"):
+        exposure = pc.get_exposure_from_name(viewpoint_camera.image_name)
+        rendered_image = (
+            torch.matmul(rendered_image.permute(1, 2, 0), exposure[:3, :3]).permute(2, 0, 1)
+            + exposure[:3, 3, None, None]
+        )
+    rendered_image = rendered_image.clamp(0, 1)
+
+    return {
+        "render": rendered_image,
+        "viewspace_points": screenspace_points,
+        "visibility_filter": (radii > 0).nonzero(),
+        "radii": radii,
+    }
 
 # integration is adopted from GOF for marching tetrahedra https://github.com/autonomousvision/gaussian-opacity-fields/blob/main/gaussian_renderer/__init__.py
 def integrate(points3D, viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, kernel_size : float, scaling_modifier = 1.0, override_color = None):
