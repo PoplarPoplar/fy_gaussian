@@ -104,12 +104,24 @@ def setup_dirs(project_dir):
     }
 
 
+def default_workspace_dir(images_dir):
+    images_dir = os.path.abspath(images_dir)
+    parent_dir = os.path.dirname(images_dir)
+    folder_name = os.path.basename(os.path.normpath(images_dir))
+    return os.path.join(parent_dir, f"{folder_name}_camera_calibration")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Build a rough Z-up COLMAP model from drone images using GPS pose priors."
     )
     parser.add_argument("--project_dir", required=True)
     parser.add_argument("--images_dir", default="", help="Defaults to <project_dir>/inputs/images")
+    parser.add_argument(
+        "--workspace_dir",
+        default="",
+        help="Directory for generated outputs. Defaults to a sibling folder next to images_dir.",
+    )
     parser.add_argument(
         "--matcher",
         choices=["custom", "exhaustive"],
@@ -138,12 +150,17 @@ def main():
     args = parse_args()
     if args.images_dir == "":
         args.images_dir = os.path.join(args.project_dir, "inputs", "images")
+    if args.workspace_dir == "":
+        if os.path.abspath(args.images_dir) == os.path.abspath(args.project_dir):
+            args.workspace_dir = default_workspace_dir(args.images_dir)
+        else:
+            args.workspace_dir = args.project_dir
 
     if not os.path.isdir(args.images_dir):
         raise FileNotFoundError(f"Image directory does not exist: {args.images_dir}")
 
     colmap_exe = "colmap.bat" if platform.system() == "Windows" else "colmap"
-    paths = setup_dirs(args.project_dir)
+    paths = setup_dirs(args.workspace_dir)
     image_relpaths = collect_image_relpaths(args.images_dir)
     if not image_relpaths:
         raise RuntimeError(f"No supported images were found under: {args.images_dir}")
@@ -257,6 +274,7 @@ def main():
     print(f"Aligned sparse model: {paths['aligned_sparse_path']}")
     if not args.skip_undistort:
         print(f"Rectified workspace: {paths['rectified_root']}")
+    print(f"Workspace root: {paths['camera_root']}")
 
 
 if __name__ == "__main__":
