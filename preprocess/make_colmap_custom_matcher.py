@@ -1,13 +1,5 @@
-#
-# Copyright (C) 2024, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use 
-# under the terms of the LICENSE.md file.
-#
-# For inquiries contact  george.drettakis@inria.fr
-#
+# 功能：为 COLMAP 生成自定义匹配对，优先利用时序关系和 EXIF/GPS 近邻，
+# 兼容“单文件夹平铺图片”和“多子目录多相机”两种组织方式。
 
 import os
 import numpy as np
@@ -46,6 +38,12 @@ def get_matches(img_name, cam_center, cam_nbrs, img_names_gps):
         matches += f"{img_name} {img_names_gps[idx]}\n" 
     return matches
 
+def build_image_relpath(subdir_name, filename):
+    if subdir_name:
+        return os.path.join(subdir_name, filename)
+    return filename
+
+
 def find_images_names(root_dir):
     image_files_by_subdir = []
 
@@ -53,7 +51,7 @@ def find_images_names(root_dir):
     for dirpath, dirnames, filenames in os.walk(root_dir):
 
         # Filter for image files (you can add more extensions if needed), sort images
-        image_files = sorted([f for f in filenames if f.lower().endswith(('.png', '.jpg', '.JPG', '.PNG'))])
+        image_files = sorted([f for f in filenames if f.lower().endswith(('.png', '.jpg', '.jpeg', '.JPG', '.PNG', '.JPEG'))])
 
         # If there are image files in the current directory, add them to the list
         if image_files:
@@ -90,7 +88,7 @@ if __name__ == '__main__':
 
 
     matches_str = []
-    def add_match(cam_id, matched_cam_id, current_image_file, matched_frame_id):
+    def add_match(current_cam, matched_cam, current_image_file, matched_frame_id):
         # REMOVE AFTER
         # if (cam_folder_list[cam_id + matched_cam_id] == "backleft") and (not cam_folder_list[cam_id] == "backleft") and (matched_frame_id >= 785):
         #     matched_frame_id -= 647
@@ -99,7 +97,9 @@ if __name__ == '__main__':
 
         if matched_frame_id < len(matched_cam['images']):
             matched_image_file = matched_cam['images'][matched_frame_id]
-            matches_str.append(f"{cam_folder_list[cam_id]}/{current_image_file} {cam_folder_list[cam_id + matched_cam_id]}/{matched_image_file}\n")
+            current_relpath = build_image_relpath(current_cam["dir"], current_image_file)
+            matched_relpath = build_image_relpath(matched_cam["dir"], matched_image_file)
+            matches_str.append(f"{current_relpath} {matched_relpath}\n")
 
 
     for cam_id, current_cam in enumerate(image_files_organised):
@@ -107,12 +107,12 @@ if __name__ == '__main__':
             for current_image_id, current_image_file in enumerate(current_cam['images']):
                 for frame_step in range(args.n_seq_matches_per_view):
                     matched_frame_id = current_image_id + frame_step
-                    add_match(cam_id, matched_cam_id, current_image_file, matched_frame_id)
+                    add_match(current_cam, matched_cam, current_image_file, matched_frame_id)
 
                 for match_id in range(args.n_quad_matches_per_view):
                     frame_step = args.n_seq_matches_per_view + int(2**match_id) - 1
                     matched_frame_id = current_image_id + frame_step
-                    add_match(cam_id, matched_cam_id, current_image_file, matched_frame_id)
+                    add_match(current_cam, matched_cam, current_image_file, matched_frame_id)
 
             ## Loop closure
             for loop_match in loop_matches:
@@ -122,7 +122,7 @@ if __name__ == '__main__':
                         current_image_file = current_cam['images'][current_image_id]
                         for matched_loop_rel_match in loop_rel_matches:
                             matched_frame_id = (loop_match[1] + matched_loop_rel_match)
-                            add_match(cam_id, matched_cam_id, current_image_file, matched_frame_id)
+                            add_match(current_cam, matched_cam, current_image_file, matched_frame_id)
 
 
     ## Add GPS matches
