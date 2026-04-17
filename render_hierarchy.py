@@ -66,6 +66,7 @@ def render_set(args, scene, pipe, out_dir, tau, eval):
             nodes_for_render_indices)
         
         indices = render_indices[:to_render].int().contiguous()
+        parent_indices_used = parent_indices[:to_render].int().contiguous()
         node_indices = nodes_for_render_indices[:to_render].contiguous()
 
         get_interpolation_weights(
@@ -78,6 +79,8 @@ def render_set(args, scene, pipe, out_dir, tau, eval):
             interpolation_weights,
             num_siblings
         )
+        interpolation_weights_used = interpolation_weights[:to_render].contiguous()
+        num_siblings_used = num_siblings[:to_render].int().contiguous()
 
         image = torch.clamp(render_post(
             viewpoint, 
@@ -85,9 +88,9 @@ def render_set(args, scene, pipe, out_dir, tau, eval):
             pipe, 
             torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device="cuda"), 
             render_indices=indices,
-            parent_indices = parent_indices,
-            interpolation_weights = interpolation_weights,
-            num_node_kids = num_siblings, 
+            parent_indices=parent_indices_used,
+            interpolation_weights=interpolation_weights_used,
+            num_node_kids=num_siblings_used, 
             use_trained_exp=args.train_test_exp
             )["render"], 0.0, 1.0)
 
@@ -138,4 +141,3 @@ if __name__ == "__main__":
 
     for tau in args.taus:
         render_set(args, scene, pipe, os.path.join(args.out_dir, f"render_{tau}"), tau, args.eval)
-

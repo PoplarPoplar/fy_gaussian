@@ -1,3 +1,4 @@
+# 功能：对单块层级高斯结果做后优化训练，并输出优化后的 hierarchy.hier_opt。
 #
 # Copyright (C) 2023 - 2024, Inria
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
@@ -22,6 +23,7 @@ from torch.utils.data import DataLoader
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 import math
+import os
 
 from gaussian_hierarchy._C import expand_to_size, get_interpolation_weights
 
@@ -52,7 +54,14 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
     indices = None
 
     iteration = first_iter
-    training_generator = DataLoader(scene.getTrainCameras(), num_workers = 8, prefetch_factor = 1, persistent_workers = True, collate_fn=direct_collate)
+    dataloader_num_workers = int(os.getenv("FY_TRAIN_POST_NUM_WORKERS", "2"))
+    training_generator = DataLoader(
+        scene.getTrainCameras(),
+        num_workers=dataloader_num_workers,
+        prefetch_factor=1 if dataloader_num_workers > 0 else None,
+        persistent_workers=dataloader_num_workers > 0,
+        collate_fn=direct_collate,
+    )
 
     limit = 0.001
 
@@ -98,8 +107,9 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
                     parent_indices,
                     nodes_for_render_indices)
                 
-                indices = render_indices[:to_render].int()
-                node_indices = nodes_for_render_indices[:to_render]
+                indices = render_indices[:to_render].int().contiguous()
+                parent_indices_used = parent_indices[:to_render].int().contiguous()
+                node_indices = nodes_for_render_indices[:to_render].contiguous()
 
                 get_interpolation_weights(
                     node_indices,
@@ -111,6 +121,8 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
                     interpolation_weights,
                     num_siblings
                 )
+                interpolation_weights_used = interpolation_weights[:to_render].contiguous()
+                num_siblings_used = num_siblings[:to_render].int().contiguous()
 
                 # Render
                 if (iteration - 1) == debug_from:
@@ -122,9 +134,9 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
                     pipe, 
                     background, 
                     render_indices=indices,
-                    parent_indices = parent_indices,
-                    interpolation_weights = interpolation_weights,
-                    num_node_kids = num_siblings,
+                    parent_indices=parent_indices_used,
+                    interpolation_weights=interpolation_weights_used,
+                    num_node_kids=num_siblings_used,
                     use_trained_exp=True,
                     )
                 image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
