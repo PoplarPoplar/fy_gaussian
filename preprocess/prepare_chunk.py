@@ -1,3 +1,4 @@
+# 功能：将 make_chunk 生成的原始块进一步整理成可训练 chunk，补齐局部去畸变、匹配、三角化和坐标回对齐。
 #
 # Copyright (C) 2024, Inria
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
@@ -32,7 +33,7 @@ if __name__ == '__main__':
 
     # First, create a new colmap database for each chunk, it is filled with the raw chunk colmap
     gen_db_attr = [
-        "python", "preprocess/fill_database.py",
+        sys.executable, "preprocess/fill_database.py",
         "--in_dir", os.path.join(args.raw_chunk, "sparse", "0"), 
         "--database_path", os.path.join(bundle_adj_chunk, "database.db")
     ]
@@ -44,7 +45,7 @@ if __name__ == '__main__':
 
     ## A custom matching file is generated for the chunk, this one is based on distance 
     make_colmap_custom_matcher_args = [
-        "python", "preprocess/make_colmap_custom_matcher_distance.py",
+        sys.executable, "preprocess/make_colmap_custom_matcher_distance.py",
         "--base_dir", os.path.join(args.raw_chunk, "sparse", "0"), 
         "--n_neighbours", f"{matching_nb}"
     ]
@@ -97,11 +98,11 @@ if __name__ == '__main__':
         print(f"Error executing colmap matches_importer: {e}")
         sys.exit(1)
 
-    os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "o"))
-    os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "t"))
-    os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "b"))
-    os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "t2"))
-    os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "0"))
+    os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "o"), exist_ok=True)
+    os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "t"), exist_ok=True)
+    os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "b"), exist_ok=True)
+    os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "t2"), exist_ok=True)
+    os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "0"), exist_ok=True)
     
     shutil.copy(os.path.join(args.raw_chunk, "sparse", "0", "images.bin"), os.path.join(bundle_adj_chunk, "sparse", "o", "images.bin"))
     shutil.copy(os.path.join(args.raw_chunk, "sparse", "0", "cameras.bin"), os.path.join(bundle_adj_chunk, "sparse", "o", "cameras.bin"))
@@ -176,7 +177,7 @@ if __name__ == '__main__':
             sys.exit(1)
 
     transform_colmap_args = [
-        "python", "preprocess/transform_colmap.py",
+        sys.executable, "preprocess/transform_colmap.py",
         "--in_dir", args.raw_chunk,
         "--new_colmap_dir", bundle_adj_chunk,
         "--out_dir", args.out_chunk

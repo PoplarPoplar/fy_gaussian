@@ -1,3 +1,4 @@
+# 功能：封装 COLMAP 数据库读写，供 chunk 预处理阶段写入相机、图像、特征和匹配信息。
 # Copyright (c) 2023, ETH Zurich and UNC Chapel Hill.
 # All rights reserved.
 #
@@ -198,8 +199,8 @@ class COLMAPDatabase(sqlite3.Connection):
         self,
         name,
         camera_id,
-        prior_q=np.full(4, np.NaN),
-        prior_t=np.full(3, np.NaN),
+        prior_q=np.full(4, np.nan),
+        prior_t=np.full(3, np.nan),
         image_id=None,
     ):
         cursor = self.execute(
