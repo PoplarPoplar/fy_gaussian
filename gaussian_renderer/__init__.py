@@ -1,3 +1,4 @@
+# 功能：统一封装高斯渲染接口，兼容当前环境中不同版本的 diff_gaussian_rasterization 签名。
 #
 # Copyright (C) 2023, Inria
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
@@ -16,6 +17,109 @@ from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
 
+RASTER_SETTING_FIELDS = getattr(GaussianRasterizationSettings, "_fields", tuple())
+
+
+def _build_raster_settings(
+    viewpoint_camera,
+    bg_color,
+    scaling_modifier,
+    sh_degree,
+    pipe,
+    kernel_size,
+    require_coord,
+    require_depth,
+    require_max_weight_indices,
+):
+    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+
+    if "kernel_size" in RASTER_SETTING_FIELDS:
+        return GaussianRasterizationSettings(
+            image_height=int(viewpoint_camera.image_height),
+            image_width=int(viewpoint_camera.image_width),
+            tanfovx=tanfovx,
+            tanfovy=tanfovy,
+            kernel_size=kernel_size,
+            bg=bg_color,
+            scale_modifier=scaling_modifier,
+            viewmatrix=viewpoint_camera.world_view_transform,
+            projmatrix=viewpoint_camera.full_proj_transform,
+            sh_degree=sh_degree,
+            campos=viewpoint_camera.camera_center,
+            prefiltered=False,
+            require_depth=require_depth,
+            require_coord=require_coord,
+            require_max_weight_indices=require_max_weight_indices,
+            debug=pipe.debug,
+        )
+
+    if "depth_threshold" in RASTER_SETTING_FIELDS:
+        empty_long = torch.empty(0, dtype=torch.int32, device="cuda")
+        empty_float = torch.empty(0, dtype=torch.float32, device="cuda")
+        return GaussianRasterizationSettings(
+            image_height=int(viewpoint_camera.image_height),
+            image_width=int(viewpoint_camera.image_width),
+            tanfovx=tanfovx,
+            tanfovy=tanfovy,
+            bg=bg_color,
+            scale_modifier=scaling_modifier,
+            depth_threshold=0.0,
+            viewmatrix=viewpoint_camera.world_view_transform,
+            projmatrix=viewpoint_camera.full_proj_transform,
+            sh_degree=sh_degree,
+            campos=viewpoint_camera.camera_center,
+            prefiltered=False,
+            debug=pipe.debug,
+            render_indices=empty_long,
+            parent_indices=empty_long,
+            interpolation_weights=empty_float,
+            num_node_kids=empty_long,
+            do_depth=require_depth,
+        )
+
+    raise RuntimeError(f"Unsupported GaussianRasterizationSettings fields: {RASTER_SETTING_FIELDS}")
+
+
+def _normalize_raster_outputs(raw_outputs, viewpoint_camera, require_depth):
+    if "kernel_size" in RASTER_SETTING_FIELDS:
+        rendered_image, radii, rendered_expected_coord, rendered_median_coord, rendered_expected_depth, rendered_median_depth, rendered_alpha, rendered_normal, maxweight_indices = raw_outputs
+        return (
+            rendered_image,
+            radii,
+            rendered_expected_coord,
+            rendered_median_coord,
+            rendered_expected_depth,
+            rendered_median_depth,
+            rendered_alpha,
+            rendered_normal,
+            maxweight_indices,
+        )
+
+    if "depth_threshold" in RASTER_SETTING_FIELDS:
+        rendered_image, radii, rendered_alpha, rendered_depth, maxweight_indices = raw_outputs
+        image_height = int(viewpoint_camera.image_height)
+        image_width = int(viewpoint_camera.image_width)
+        rendered_expected_coord = torch.empty(0, device=rendered_image.device)
+        rendered_median_coord = torch.empty(0, device=rendered_image.device)
+        rendered_expected_depth = rendered_depth if require_depth else torch.empty(0, device=rendered_image.device)
+        rendered_median_depth = rendered_depth if require_depth else torch.empty(0, device=rendered_image.device)
+        rendered_normal = torch.zeros((3, image_height, image_width), dtype=rendered_image.dtype, device=rendered_image.device)
+        return (
+            rendered_image,
+            radii,
+            rendered_expected_coord,
+            rendered_median_coord,
+            rendered_expected_depth,
+            rendered_median_depth,
+            rendered_alpha,
+            rendered_normal,
+            maxweight_indices,
+        )
+
+    raise RuntimeError(f"Unsupported Gaussian rasterizer outputs for fields: {RASTER_SETTING_FIELDS}")
+
+
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, kernel_size=0.0, scaling_modifier = 1.0, require_coord : bool = True, require_depth : bool = True, require_max_weight_indices : bool = False):
     """
     Render the scene. 
@@ -23,41 +127,22 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     Background tensor (bg_color) must be on GPU!
     """
 
-    # Set up rasterization configuration
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
     try:
         screenspace_points.retain_grad()
     except:
         pass
 
-    raster_settings = GaussianRasterizationSettings(
-        image_height=int(viewpoint_camera.image_height),
-        image_width=int(viewpoint_camera.image_width),
-        tanfovx=tanfovx,
-        tanfovy=tanfovy,
-        bg=bg_color,
-        scale_modifier=scaling_modifier,
-        viewmatrix=viewpoint_camera.world_view_transform,
-        projmatrix=viewpoint_camera.full_proj_transform,
+    raster_settings = _build_raster_settings(
+        viewpoint_camera=viewpoint_camera,
+        bg_color=bg_color,
+        scaling_modifier=scaling_modifier,
         sh_degree=pc.active_sh_degree,
-        campos=viewpoint_camera.camera_center,
-        prefiltered=False,
-        #GaussianRasterizationSettings没有的参数
-        kernel_size = kernel_size,
-        require_coord = require_coord,
-        require_depth = require_depth,
-        require_max_weight_indices = require_max_weight_indices,
-        debug=pipe.debug,
-        #GaussianRasterizationSettings多余的参数
-        #depth_threshold=torch.empty(0),
-        #render_indices=torch.empty(0),
-        #parent_indices=torch.empty(0),
-        #interpolation_weights=torch.empty(0),
-        #num_node_kids=torch.empty(0),
-        #do_depth=torch.empty(0)
-
+        pipe=pipe,
+        kernel_size=kernel_size,
+        require_coord=require_coord,
+        require_depth=require_depth,
+        require_max_weight_indices=require_max_weight_indices,
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -79,7 +164,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     shs = pc.get_features
     colors_precomp = None
 
-    rendered_image, radii, rendered_expected_coord, rendered_median_coord, rendered_expected_depth, rendered_median_depth, rendered_alpha, rendered_normal, maxweight_indices = rasterizer(
+    raw_outputs = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
@@ -88,6 +173,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         scales = scales,
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
+    rendered_image, radii, rendered_expected_coord, rendered_median_coord, rendered_expected_depth, rendered_median_depth, rendered_alpha, rendered_normal, maxweight_indices = _normalize_raster_outputs(
+        raw_outputs,
+        viewpoint_camera,
+        require_depth,
+    )
 
 
 

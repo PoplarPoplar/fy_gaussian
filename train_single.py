@@ -1,3 +1,4 @@
+# 功能：执行单个高斯分块的最小训练流程，支持在缺少 fused_ssim 扩展时自动回退到 PyTorch SSIM。
 #
 # Copyright (C) 2023 - 2024, Inria
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
@@ -31,7 +32,10 @@ import lpips
 from PIL import Image
 from utils.graphics_utils import point_double_to_normal, depth_double_to_normal
 
-from fused_ssim import fused_ssim
+try:
+    from fused_ssim import fused_ssim
+except ImportError:
+    fused_ssim = None
 
 def visualize_tensor(img_tensor, file_path):
     """
@@ -171,7 +175,7 @@ def training(dataset, opt, pipe, output_milestone = False, writer = None):
                 # if iteration > opt.densify_until_iter:
                 #     opt.lambda_dssim = 1.0
                 Ll1 = l1_loss(image, gt_image)
-                if pipe.fused_ssim:
+                if pipe.fused_ssim and fused_ssim is not None:
                     Lssim = (1.0 - fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0)))
                 else:
                     Lssim = (1.0 - ssim(image, gt_image))
@@ -661,7 +665,14 @@ if __name__ == "__main__":
 
     else:
         args.opacity_reset_iters = [args.opacity_reset_iters[0]]
+        if len(args.stage_iterations) < 3:
+            # 最小训练模式下允许不显式提供阶段切换点，避免直接索引空列表导致训练提前失败。
+            args.stage_iterations = [args.densify_until_iter, args.densify_until_iter, args.densify_until_iter]
        
+
+    if args.fused_ssim and fused_ssim is None:
+        print("[train_single] fused_ssim 不可用，自动回退到 torch ssim。")
+        args.fused_ssim = False
 
     print("Optimizing " + args.model_path)
 
