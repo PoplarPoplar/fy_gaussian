@@ -1,0 +1,90 @@
+*.pyc
+.vscode
+output
+build
+dist
+tensorboard_3d
+screenshots
+*.spec
+.idea
+**/build/
+**/dist/
+__pycache__/
+*.pyo
+*.pyd
+
+# Python environments
+.venv/
+venv/
+env/
+.env
+
+# Training artifacts / results
+results/
+result/
+logs/
+log/
+runs/
+run/
+exp/
+exps/
+check/
+checkpoint/
+checkpoints/
+cache/
+.cache/
+tmp/
+temp/
+artifacts/
+vis/
+visualizations/
+
+# Data
+data/
+dataset/
+datasets/
+
+# Model weights / large intermediates
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.engine
+*.bin
+*.db
+*.npy
+*.npz
+*.ply
+*.pcd
+*.las
+*.laz
+
+# Native build outputs
+*.o
+*.obj
+*.so
+*.a
+*.lib
+*.dll
+*.dylib
+*.exe
+
+# CMake / build system
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+
+# Packaging / local metadata
+*.egg-info/
+
+# Optional local experiments / viewer docs
+ablation/
+SIBR_viewers/docs/
+
+# Third-party docs / tests not needed for reproduction
+submodules/**/third_party/**/doc/
+submodules/**/third_party/**/docs/
+submodules/**/third_party/**/test/
+submodules/**/third_party/**/tests/
+submodules/**/third_party/**/bench/
+submodules/**/third_party/**/benchmark/
