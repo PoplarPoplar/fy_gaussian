@@ -15,6 +15,26 @@ import subprocess
 import argparse
 import time, platform
 from read_write_model import write_points3D_binary
+from read_write_model import read_images_binary
+
+
+def link_chunk_images(raw_chunk_sparse_dir, source_images_dir, target_images_dir):
+    """
+    将 raw chunk 中实际引用到的图像链接到本地 images 目录。
+    用于输入已经是去畸变图像时，跳过再次 image_undistorter。
+    """
+    os.makedirs(target_images_dir, exist_ok=True)
+    images = read_images_binary(os.path.join(raw_chunk_sparse_dir, "images.bin"))
+    for image_meta in images.values():
+        src = os.path.join(source_images_dir, image_meta.name)
+        dst = os.path.join(target_images_dir, image_meta.name)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.lexists(dst):
+            continue
+        try:
+            os.symlink(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -22,6 +42,7 @@ if __name__ == '__main__':
     parser.add_argument('--out_chunk', type=str, help='Output chunk', required=True)
     parser.add_argument('--images_dir', type=str, help='Images directory', required=True)
     parser.add_argument('--skip_bundle_adjustment', action="store_true", default=False)
+    parser.add_argument('--images_are_undistorted', action="store_true", default=False)
     args = parser.parse_args()
 
     matching_nb = 50 if args.skip_bundle_adjustment else 200
@@ -58,19 +79,31 @@ if __name__ == '__main__':
     shutil.copy(os.path.join(args.raw_chunk, "sparse", "0", f"matching_{matching_nb}.txt"), os.path.join(bundle_adj_chunk, f"matching_{matching_nb}.txt"))
 
     ## Extracting the subset of images corresponding to that chunk
-    print(f"undistorting to chunk {bundle_adj_chunk}...")
-    colmap_image_undistorter_args = [
-        colmap_exe, "image_undistorter",
-        "--image_path", f"{args.images_dir}",
-        "--input_path", f"{args.raw_chunk}/sparse/0", 
-        "--output_path", f"{bundle_adj_chunk}",
-        "--output_type", "COLMAP"
-        ]
-    try:
-        subprocess.run(colmap_image_undistorter_args, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"Error executing image_undistorter: {e}")
-        sys.exit(1)
+    if args.images_are_undistorted:
+        print(f"linking undistorted images to chunk {bundle_adj_chunk}...")
+        os.makedirs(os.path.join(bundle_adj_chunk, "sparse", "0"), exist_ok=True)
+        shutil.copy(os.path.join(args.raw_chunk, "sparse", "0", "images.bin"), os.path.join(bundle_adj_chunk, "sparse", "0", "images.bin"))
+        shutil.copy(os.path.join(args.raw_chunk, "sparse", "0", "cameras.bin"), os.path.join(bundle_adj_chunk, "sparse", "0", "cameras.bin"))
+        write_points3D_binary({}, os.path.join(bundle_adj_chunk, "sparse", "0", "points3D.bin"))
+        link_chunk_images(
+            os.path.join(args.raw_chunk, "sparse", "0"),
+            args.images_dir,
+            os.path.join(bundle_adj_chunk, "images"),
+        )
+    else:
+        print(f"undistorting to chunk {bundle_adj_chunk}...")
+        colmap_image_undistorter_args = [
+            colmap_exe, "image_undistorter",
+            "--image_path", f"{args.images_dir}",
+            "--input_path", f"{args.raw_chunk}/sparse/0", 
+            "--output_path", f"{bundle_adj_chunk}",
+            "--output_type", "COLMAP"
+            ]
+        try:
+            subprocess.run(colmap_image_undistorter_args, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error executing image_undistorter: {e}")
+            sys.exit(1)
 
     print("extracting features...")
     colmap_feature_extractor_args = [

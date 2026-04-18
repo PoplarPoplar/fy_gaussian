@@ -1,3 +1,4 @@
+# 功能：按全局 sparse 模型批量生成 raw_chunks 和 prepare 后的 chunks，支持调节 chunk_size 等关键分块参数。
 #
 # Copyright (C) 2024, Inria
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
@@ -13,6 +14,27 @@ import os, sys
 import subprocess
 import argparse
 import time, platform
+
+
+def write_valid_chunks_file(chunks_root):
+    chunk_names = sorted(
+        name for name in os.listdir(chunks_root)
+        if os.path.isdir(os.path.join(chunks_root, name))
+    )
+    with open(os.path.join(chunks_root, "valid_chunks.txt"), "w", encoding="utf-8") as file:
+        for name in chunk_names:
+            file.write(name + "\n")
+    return chunk_names
+
+
+def get_sparse_model_dir(colmap_dir):
+    sparse_dir = os.path.join(colmap_dir, "sparse")
+    sparse_zero_dir = os.path.join(sparse_dir, "0")
+    if os.path.isfile(os.path.join(sparse_zero_dir, "cameras.bin")):
+        return sparse_zero_dir
+    if os.path.isfile(os.path.join(sparse_dir, "cameras.bin")):
+        return sparse_dir
+    raise FileNotFoundError(f"Could not find COLMAP sparse model under {colmap_dir}")
 
 def submit_job(slurm_args):
     """Submit a job using sbatch and return the job ID."""    
@@ -35,7 +57,7 @@ def is_job_finished(job):
 
 def setup_dirs(images, colmap, chunks, project):
     images_dir = os.path.join(project, "camera_calibration", "rectified", "images") if images == "" else images
-    colmap_dir = os.path.join(project, "camera_calibration", "aligned") if colmap == "" else colmap
+    colmap_dir = os.path.join(project, "camera_calibration", "rectified") if colmap == "" else colmap
     chunks_dir = os.path.join(project, "camera_calibration") if chunks == "" else chunks
 
     return images_dir, colmap_dir, chunks_dir
@@ -49,6 +71,12 @@ if __name__ == '__main__':
     parser.add_argument('--use_slurm', action="store_true", default=False)
     parser.add_argument('--skip_bundle_adjustment', action="store_true", default=False)
     parser.add_argument('--n_jobs', type=int, default=8, help="Run per chunk COLMAP in parallel on the same machine. Does not handle multi GPU systems. --use_slurm overrides this.")
+    parser.add_argument('--chunk_size', type=float, default=100.0)
+    parser.add_argument('--min_n_cams', type=int, default=100)
+    parser.add_argument('--max_n_cams', type=int, default=1500)
+    parser.add_argument('--min_padd', type=float, default=0.2)
+    parser.add_argument('--lapla_thresh', type=float, default=1.0)
+    parser.add_argument('--images_are_undistorted', action="store_true", default=True)
     args = parser.parse_args()
     
     images_dir, colmap_dir, chunks_dir = setup_dirs(
@@ -65,14 +93,20 @@ if __name__ == '__main__':
 
     colmap_exe = "colmap.bat" if platform.system() == "Windows" else "colmap"
     start_time = time.time()
+    sparse_model_dir = get_sparse_model_dir(colmap_dir)
 
     ## First create raw_chunks, each chunk has its own colmap.
     print(f"chunking colmap from {colmap_dir} to {args.chunks_dir}/raw_chunks")
     make_chunk_args = [
-            "python", f"preprocess/make_chunk.py",
-            "--base_dir", os.path.join(colmap_dir, "sparse", "0"),
+            sys.executable, f"preprocess/make_chunk.py",
+            "--base_dir", sparse_model_dir,
             "--images_dir", f"{images_dir}",
             "--output_path", f"{chunks_dir}/raw_chunks",
+            "--chunk_size", str(args.chunk_size),
+            "--min_n_cams", str(args.min_n_cams),
+            "--max_n_cams", str(args.max_n_cams),
+            "--min_padd", str(args.min_padd),
+            "--lapla_thresh", str(args.lapla_thresh),
         ]
     try:
         subprocess.run(make_chunk_args, check=True)
@@ -104,10 +138,12 @@ if __name__ == '__main__':
                 if os.path.exists(intermediate_dir):
                     print(f"{intermediate_dir} exists! Per chunk triangulation might crash!")
                 prepare_chunk_args = [
-                        "python", f"preprocess/prepare_chunk.py",
+                        sys.executable, f"preprocess/prepare_chunk.py",
                         "--raw_chunk", in_dir, "--out_chunk", out_dir, 
                         "--images_dir", images_dir
                 ]
+                if args.images_are_undistorted:
+                    prepare_chunk_args.append("--images_are_undistorted")
                 if args.skip_bundle_adjustment:
                     prepare_chunk_args.append("--skip_bundle_adjustment")
                 job = subprocess.Popen(
@@ -152,10 +188,12 @@ if __name__ == '__main__':
     # create chunks.txt file that concatenates all chunks center.txt and extent.txt files
     try:
         subprocess.run([
-            "python", "preprocess/concat_chunks_info.py",
+            sys.executable, "preprocess/concat_chunks_info.py",
             "--base_dir", os.path.join(chunks_dir, "chunks"),
             "--dest_dir", colmap_dir
         ], check=True)
+        valid_chunk_names = write_valid_chunks_file(os.path.join(chunks_dir, "chunks"))
+        print(f"Prepared {len(valid_chunk_names)} valid chunks.")
         n_processed += 1
     except subprocess.CalledProcessError as e:
         print(f"Error executing concat_chunks_info.sh: {e}")
@@ -163,4 +201,3 @@ if __name__ == '__main__':
 
     end_time = time.time()
     print(f"chunks successfully prepared in {(end_time - start_time)/60.0} minutes.")
-
